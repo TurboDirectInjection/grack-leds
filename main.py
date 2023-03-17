@@ -1,17 +1,22 @@
 # Example using PIO to drive a set of WS2812 LEDs.
 
 import array, time
-from machine import Pin
+from machine import Pin, Timer
 import rp2
 from math import floor
+import random
+import _thread
+from ulab import numpy as np
+
 
 NUM_PLAYERS  = 6
+STOP_LOOPING_EFFECT = False # Global variable allowing looping effects to be interrupted
 
 # Configure the number of WS2812 LEDs.
 NUM_LEDS = 200
-PIN_NUM = 1
-brightness = 0.1
-LED_IDXS = range(0, NUM_LEDS)
+PIN_NUM = 1 # pinout pin = PIN_NUM + 1; indexing starts at zero because why not
+brightness = 0.1 # Scalar from 0-1
+LED_IDXS = range(0, NUM_LEDS) # Array of 
 
 # Some color lookups
 BLACK = (0, 0, 0)
@@ -25,6 +30,7 @@ WHITE = (255, 255, 255)
 COLORS = (BLACK, RED, YELLOW, GREEN, CYAN, BLUE, PURPLE, WHITE)
 
 ######################## PIO STATE MACHINE ################################
+rp2.PIO(0).remove_program() # Clears PIO memory for pico-W compatibility
 # Assembly instructions that dictate the hardware-level procedure for writing data to LEDs
 @rp2.asm_pio(sideset_init=rp2.PIO.OUT_LOW, out_shiftdir=rp2.PIO.SHIFT_LEFT, autopull=True, pull_thresh=24)
 def ws2812():
@@ -94,8 +100,64 @@ def fire_tone(temp):
         return (255, (temp - 85), 0)
     else: # High temperatures shift towards white
         return (255, (temp - 85), (temp - 170))
+
+# Just sweeps through the fire tone colors.
+def fire_sweep():
+    for j in range(255):
+        for i in range(NUM_LEDS):
+            temp = (i * 256 // NUM_LEDS) + j
+            pixels_set(i, fire_tone(temp & 255))
+        pixels_show()
+        time.sleep(0.01)
+
+def fire_callback(t):
+    global STOP_LOOPING_EFFECT
+    STOP_LOOPING_EFFECT = True
     
- 
+# @param duration: time in ms for fire storm to run
+def fire_storm(duration):
+    global STOP_LOOPING_EFFECT # Lets exterior programs communicate a stop
+    # Create timer to trigger end of fire_storm
+    timer = machine.Timer(mode=Timer.ONE_SHOT, callback=fire_callback, period=duration)
+    
+    spark_chance = 0.99 # Likelihood of igniting new hotspot (0-1, 1 being no sparks)
+    cooldown = 0.98 # How much heat to subtract from everything
+    maxheat = 200
+    minheat = 20
+    
+    heatvals = [random.randint(0, 255) for _ in range(NUM_LEDS)] # Initial seed values for fire heat
+    newheat  = [0 for _ in range(NUM_LEDS)]
+    while not STOP_LOOPING_EFFECT:
+        sparks = [random.random() > spark_chance for _ in range(NUM_LEDS)] # Where to ignite new flame
+        
+        for i in range(NUM_LEDS):
+            '''
+            if idx < 1: # Handle wraparound conditions
+                prev_idx = NUM_LEDS - 1
+            else:
+                prev_idx = idx - 1
+            if idx >= NUM_LEDS - 1:
+                next_idx = 0
+            else:
+                next_idx = idx + 1
+            '''
+            prev_idx1 = (i - 1) % NUM_LEDS
+            prev_idx2 = (i - 2) % NUM_LEDS
+            next_idx1 = (i + 1) % NUM_LEDS
+            next_idx2 = (i + 2) % NUM_LEDS
+
+                
+            newheat[i] = (heatvals[i] * 3 + heatvals[prev_idx1] * 2 + heatvals[prev_idx2] + heatvals[next_idx1] * 2 + heatvals[next_idx2]) // 9 # Heat diffuses to neighbors and decreases
+            if sparks[i] and newheat[i] < 128: # Is this a site for new heat?
+                newheat[i] = newheat[i] + random.randint(128, 255 - newheat[i])
+            newheat[i] = min(maxheat, int(newheat[i] * cooldown))
+            newheat[i] = max(minheat, newheat[i])
+            pixels_set(i, fire_tone(newheat[i]))
+        pixels_show()
+        heatvals = newheat
+    
+        
+    STOP_LOOPING_EFFECT = False
 
 def disp_player(player_num):
     '''
@@ -112,12 +174,6 @@ def disp_player(player_num):
     pixels_show()
     
 
-def fire_sweep():
-    for j in range(255):
-        for i in range(NUM_LEDS):
-            temp = (i * 256 // NUM_LEDS) + j
-            pixels_set(i, fire_tone(temp & 255))
-        pixels_show()
-        time.sleep(0.01)
 
-fire_sweep()
+fire_storm(100000)
+#fire_sweep()
